@@ -14,27 +14,11 @@ var br = '\n';
 var currentWaitTime = 0;
 var DELTA_WAIT_TIME = 150; //Wait 150 milliseconds between request so we're not attacking Trello's API
 
-//var numDays = process.argv[2];
-
-//So we can limit the amount of cards we retrieve, we'll need to store the end date
-/*
-var endDate = new Date();
-endDate.setDate(endDate.getDate() - numDays);
-*/
-
-//Make sure numDays is a number >= 1
-//if (numDays && !isNaN(numDays) && numDays > 0) {
-  createMarkdowns();
-/*} else {
-  console.log('Number of days to search must be a positive number greater than 0.');
-  console.log('Usage: node trello-json-to-markdown.js \<number_of_days_to_search\>');
-}
-*/
+createMarkdowns();
 
 /**
  * This will generate the markdown files for each board and
  * cards within each board
- *
  */
 function createMarkdowns() {
 
@@ -50,6 +34,7 @@ function createMarkdowns() {
         var cards = boardJSON.cards;
         var cardDirectory = ''; 
         var boardDirectory = cleanFileName(boardName) + '/';
+        var downloadDirectory = cleanFileName(boardName) + '/downloads/';
 
         var tableOfContentsFile = boardDirectory + boardName + '.md';
   
@@ -61,12 +46,10 @@ function createMarkdowns() {
           fs.mkdirSync(boardDirectory);
         }
 
-        //Sort cards based on the most recent activity
-        //We're sorting in reversed order since later dates are 'larger'
-        //so they will be put in later into the array if not sorted in reverse
-        //cards.sort(function (card1, card2) {
-        //  return Date.parse(card2.dateLastActivity) - Date.parse(card1.dateLastActivity);
-        //});
+        //Make the download directory if they does not already exist
+        if (!fs.existsSync(downloadDirectory)) {
+          fs.mkdirSync(downloadDirectory);
+        }
 
         cards.forEach(function (card) {
           
@@ -89,15 +72,11 @@ function createMarkdowns() {
           tableOfContents += hr + br;
     
           setTimeout(function () {
-            createCardMarkdown(card.id, cardName, cardFilePath, true);
+            createCardMarkdown(card.id, cardName, cardFilePath, downloadDirectory, true);
           }, currentWaitTime);
           currentWaitTime += DELTA_WAIT_TIME;
                 
         });
-
-        //cards = cards.filter(function (card) {
-        //  return Date.parse(card.dateLastActivity) >= endDate;
-        //})    
 
         //Write the table of contents to its markdown file
         fs.writeFileSync(tableOfContentsFile, tableOfContents);
@@ -106,13 +85,13 @@ function createMarkdowns() {
   });
 }
 
-function createCardMarkdown(cardId, cardName, cardFilePath, retry) {
+function createCardMarkdown(cardId, cardName, cardFilePath, downloadDirectory, retry) {
   trello.get('/1/card/' + cardId + '?actions=all&actions_limit=1000&members=true&member_fields=all&checklists=all&checklist_fields=all&attachments=true', function (error, cardJSON) {
     if (error) {
       if (retry) {
-        console.log('An error has occurred when gathering actions for ' + cardId);
+        console.log('An error has occurred when gathering cardid ' + cardId);
         console.log('Retrying to get the actions now...');
-        createCardMarkdown(cardId, cardName, cardFilePath, false);
+        createCardMarkdown(cardId, cardName, cardFilePath, downloadDirectory, false);
       } else {
         console.log('Requesting ' + cardId + ' failed again.');
         console.log('It will not be requested again.');
@@ -129,7 +108,7 @@ function createCardMarkdown(cardId, cardName, cardFilePath, retry) {
       //----------------CARD MARKDOWN----------------
 
       //Set the short id of the card as the title of the markdown file
-      var cardMd = h1 + ' #' + cardName + br;
+      var cardMd = h3 + cardName + br + hr + br;;
 
       //----------------DESCRIPTION----------------
       //If there is no description, we just won't display the field
@@ -242,12 +221,21 @@ function createCardMarkdown(cardId, cardName, cardFilePath, retry) {
       if (attachments && attachments.length > 0) {
         cardMd += br + h4 + 'Attachments:' + br;
         attachments.forEach(function (attachment) {
-          cardMd += '* [' + attachment.name + '](' + attachment.url + ')' + br;
+          var attachmentName =  attachment.id + '-' + cleanFileName(attachment.name);
+          cardMd += '* [' + attachmentName + '](' + attachment.url + ')' + br;
+          
+          //Attachment on trello
+          if(attachment.url.indexOf('https://trello') !== -1)  {
+            console.log('Downloading ' + attachmentName + ' on ' + attachment.url);
+            download(attachment.url, downloadDirectory + attachmentName);
+            cardMd += '* ![[' + attachmentName + ']]' + br;            
+          }
+
         });
       }
       //----------------END ATTACHMENTS----------------
 
-      cardMd += br + h5 + 'Card Id: ' + cardJSON.idShort + ' URL: [' + cardJSON.shortUrl + '](' + cardJSON.shortUrl + ')' + br;
+      cardMd += br + h4 + 'Card Id: ' + cardJSON.idShort + ' - URL: [' + cardJSON.shortUrl + '](' + cardJSON.shortUrl + ')' + br;    
       
       //----------------END CARD MARKDOWN----------------
 
@@ -259,4 +247,44 @@ function createCardMarkdown(cardId, cardName, cardFilePath, retry) {
 
 function cleanFileName(fileDirName) {
   return fileDirName.replace(/[/\\?%*:|"<>]/g, '-');    
+}
+
+var http = require("https");
+var fs = require("fs");
+
+function download(url, dest) {
+    return new Promise((resolve, reject) => {
+        const file = fs.createWriteStream(dest, { flags: "wx" });
+
+        const request = http.get(url, response => {
+            if (response.statusCode === 200) {
+                response.pipe(file);
+            } else {
+                file.close();
+                fs.unlink(dest, () => {}); // Delete temp file
+                reject(`Server responded with ${response.statusCode}: ${response.statusMessage}`);
+            }
+        });
+
+        request.on("error", err => {
+            file.close();
+            fs.unlink(dest, () => {}); // Delete temp file
+            reject(err.message);
+        });
+
+        file.on("finish", () => {
+            resolve();
+        });
+
+        file.on("error", err => {
+            file.close();
+
+            if (err.code === "EEXIST") {
+                reject("File already exists: " + dest);
+            } else {
+                fs.unlink(dest, () => {}); // Delete temp file
+                reject(err.message);
+            }
+        });
+    });
 }
